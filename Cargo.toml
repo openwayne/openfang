@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
@@ -137,6 +137,9 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 imap = "2"
 native-tls = "0.2"
 mailparse = "0.15"
+
+# OpenSSL (vendored = statically compiled, no runtime libssl dependency on Linux)
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Testing
 tokio-test = "0.4"

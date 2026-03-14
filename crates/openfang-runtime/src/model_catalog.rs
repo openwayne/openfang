@@ -875,6 +875,10 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("qwen-coder", "qwen-code/qwen3-coder"),
         ("qwen-coder-plus", "qwen-code/qwen-coder-plus"),
         ("qwq", "qwen-code/qwq-32b"),
+        // OpenRouter free-tier aliases
+        ("openrouter/free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
+        ("free", "openrouter/meta-llama/llama-3.1-8b-instruct:free"),
+        ("free-reasoning", "openrouter/deepseek/deepseek-r1:free"),
     ];
     pairs
         .into_iter()

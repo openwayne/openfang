@@ -125,12 +125,21 @@ async function startConnection() {
       if (msg.key.remoteJid === 'status@broadcast') continue;
 
       const sender = msg.key.remoteJid || '';
-      const text = msg.message?.conversation
+      let text = msg.message?.conversation
         || msg.message?.extendedTextMessage?.text
         || msg.message?.imageMessage?.caption
         || '';
 
-      if (!text) continue;
+      // Detect media type if no text
+      if (!text) {
+        const m = msg.message;
+        if (m?.imageMessage) text = '[Image received]' + (m.imageMessage.caption ? ': ' + m.imageMessage.caption : '');
+        else if (m?.audioMessage) text = '[Voice note received]';
+        else if (m?.videoMessage) text = '[Video received]' + (m.videoMessage.caption ? ': ' + m.videoMessage.caption : '');
+        else if (m?.documentMessage) text = '[Document received: ' + (m.documentMessage.fileName || 'file') + ']';
+        else if (m?.stickerMessage) text = '[Sticker received]';
+        else continue; // Only skip truly empty messages
+      }
 
       // Extract phone number from JID (e.g. "1234567890@s.whatsapp.net" → "+1234567890")
       const phone = '+' + sender.replace(/@.*$/, '');

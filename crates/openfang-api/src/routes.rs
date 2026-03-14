@@ -364,16 +364,10 @@ pub async fn send_message(
         }
     }
 
-    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
-    // so the agent loop can see who sent the message. Requires extending
-    // send_message_with_handle to accept optional sender metadata.
-    let _sender_id = req.sender_id;
-    let _sender_name = req.sender_name;
-
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
-        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle))
+        .send_message_with_handle(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
         .await
     {
         Ok(result) => {
@@ -1349,15 +1343,11 @@ pub async fn send_message_stream(
             .into_response();
     }
 
-    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
-    let _sender_id = req.sender_id;
-    let _sender_name = req.sender_name;
-
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     let (rx, _handle) =
         match state
             .kernel
-            .send_message_streaming(agent_id, &req.message, Some(kernel_handle))
+            .send_message_streaming(agent_id, &req.message, Some(kernel_handle), req.sender_id, req.sender_name)
         {
             Ok(pair) => pair,
             Err(e) => {
@@ -3990,7 +3980,9 @@ pub async fn install_hand_deps(
             let combined = format!("{stdout}{stderr}");
             let likely_ok = combined.contains("already installed")
                 || combined.contains("No applicable update")
-                || combined.contains("No available upgrade");
+                || combined.contains("No available upgrade")
+                || combined.contains("already an App at")
+                || combined.contains("is already installed");
             results.push(serde_json::json!({
                 "key": req.key,
                 "status": if likely_ok { "installed" } else { "error" },
@@ -8189,7 +8181,7 @@ pub async fn run_schedule(
     );
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
-    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle)).await {
+    match state.kernel.send_message_with_handle(target_agent, &run_message, Some(kernel_handle), None, None).await {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!({

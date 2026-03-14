@@ -1389,7 +1389,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle(agent_id, message, handle)
+        self.send_message_with_handle(agent_id, message, handle, None, None)
             .await
     }
 
@@ -1408,7 +1408,7 @@ impl OpenFangKernel {
             .get()
             .and_then(|w| w.upgrade())
             .map(|arc| arc as Arc<dyn KernelHandle>);
-        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks))
+        self.send_message_with_handle_and_blocks(agent_id, message, handle, Some(blocks), None, None)
             .await
     }
 
@@ -1418,8 +1418,10 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
-        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None)
+        self.send_message_with_handle_and_blocks(agent_id, message, kernel_handle, None, sender_id, sender_name)
             .await
     }
 
@@ -1438,6 +1440,8 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Acquire per-agent lock to serialize concurrent messages for the same agent.
         // This prevents session corruption when multiple messages arrive in quick
@@ -1467,7 +1471,7 @@ impl OpenFangKernel {
             self.execute_python_agent(&entry, agent_id, message).await
         } else {
             // Default: LLM agent loop (builtin:chat or any unrecognized module)
-            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks)
+            self.execute_llm_agent(&entry, agent_id, message, kernel_handle, content_blocks, sender_id, sender_name)
                 .await
         };
 
@@ -1522,6 +1526,8 @@ impl OpenFangKernel {
         agent_id: AgentId,
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<(
         tokio::sync::mpsc::Receiver<StreamEvent>,
         tokio::task::JoinHandle<KernelResult<AgentLoopResult>>,
@@ -1759,8 +1765,8 @@ impl OpenFangKernel {
                 },
                 peer_agents,
                 current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
-                sender_id: None,
-                sender_name: None,
+                sender_id,
+                sender_name,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2087,6 +2093,7 @@ impl OpenFangKernel {
     }
 
     /// Execute the default LLM-based agent loop.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_llm_agent(
         &self,
         entry: &AgentEntry,
@@ -2094,6 +2101,8 @@ impl OpenFangKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         content_blocks: Option<Vec<openfang_types::message::ContentBlock>>,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
     ) -> KernelResult<AgentLoopResult> {
         // Check metering quota before starting
         self.metering
@@ -2268,8 +2277,8 @@ impl OpenFangKernel {
                 },
                 peer_agents,
                 current_date: Some(chrono::Local::now().format("%A, %B %d, %Y (%Y-%m-%d %H:%M %Z)").to_string()),
-                sender_id: None,
-                sender_name: None,
+                sender_id,
+                sender_name,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -3924,7 +3933,7 @@ impl OpenFangKernel {
                                 let kh: std::sync::Arc<dyn openfang_runtime::kernel_handle::KernelHandle> = kernel.clone();
                                 match tokio::time::timeout(
                                     timeout,
-                                    kernel.send_message_with_handle(agent_id, message, Some(kh)),
+                                    kernel.send_message_with_handle(agent_id, message, Some(kh), None, None),
                                 )
                                 .await
                                 {
