@@ -16,7 +16,7 @@ use futures::StreamExt;
 use openfang_types::agent::AgentId;
 use openfang_types::config::{ChannelOverrides, DmPolicy, GroupPolicy, OutputFormat};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -291,6 +291,11 @@ impl BridgeManager {
         }
     }
 
+    /// Return a reference to the underlying agent router.
+    pub fn router(&self) -> &Arc<AgentRouter> {
+        &self.router
+    }
+
     /// Start an adapter: subscribe to its message stream and spawn a dispatch task.
     ///
     /// Each incoming message is dispatched as a concurrent task so that slow LLM
@@ -342,6 +347,7 @@ impl BridgeManager {
                                         &handle,
                                         &router,
                                         adapter.as_ref(),
+                                        &adapter,
                                         &rate_limiter,
                                     ).await;
                                 });
@@ -434,6 +440,24 @@ async fn send_lifecycle_reaction(
     let _ = adapter.send_reaction(user, message_id, &reaction).await;
 }
 
+/// Spawn a background task that refreshes the typing indicator every 4 seconds.
+///
+/// Returns a `JoinHandle` that should be aborted once the LLM call completes.
+/// Telegram (and similar platforms) expire typing indicators after ~5 seconds,
+/// so refreshing at 4-second intervals keeps the indicator alive for the entire
+/// duration of long LLM calls.
+fn spawn_typing_loop(
+    adapter: Arc<dyn ChannelAdapter>,
+    sender: ChannelUser,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            let _ = adapter.send_typing(&sender).await;
+        }
+    })
+}
+
 /// Dispatch a single incoming message — handles bot commands or routes to an agent.
 ///
 /// Applies per-channel policies (DM/group filtering, rate limiting, formatting, threading).
@@ -442,6 +466,7 @@ async fn dispatch_message(
     handle: &Arc<dyn ChannelBridgeHandle>,
     router: &Arc<AgentRouter>,
     adapter: &dyn ChannelAdapter,
+    adapter_arc: &Arc<dyn ChannelAdapter>,
     rate_limiter: &ChannelRateLimiter,
 ) {
     let ct_str = channel_type_str(&message.channel);
@@ -540,6 +565,7 @@ async fn dispatch_message(
                 handle,
                 router,
                 adapter,
+                adapter_arc,
                 ct_str,
                 thread_id,
                 output_format,
@@ -643,6 +669,8 @@ async fn dispatch_message(
             }
             let _ = adapter.send_typing(&message.sender).await;
 
+            let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+
             let strategy = router.broadcast_strategy();
             let mut responses = Vec::new();
 
@@ -681,6 +709,8 @@ async fn dispatch_message(
                     }
                 }
             }
+
+            typing_task.abort();
 
             let combined = responses.join("\n\n");
             send_response(adapter, &message.sender, combined, thread_id, output_format).await;
@@ -764,8 +794,17 @@ async fn dispatch_message(
         send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
     }
 
+    // Continuous typing indicator — refreshes every 4s so platforms like Telegram
+    // (which expire typing after ~5s) keep showing it during long LLM calls.
+    let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+
     // Send to agent and relay response
-    match handle.send_message(agent_id, &text).await {
+    let result = handle.send_message(agent_id, &text).await;
+
+    // Stop the typing refresh now that we have a response
+    typing_task.abort();
+
+    match result {
         Ok(response) => {
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;
@@ -999,6 +1038,7 @@ async fn dispatch_with_blocks(
     handle: &Arc<dyn ChannelBridgeHandle>,
     router: &Arc<AgentRouter>,
     adapter: &dyn ChannelAdapter,
+    adapter_arc: &Arc<dyn ChannelAdapter>,
     ct_str: &str,
     thread_id: Option<&str>,
     output_format: OutputFormat,
@@ -1067,7 +1107,14 @@ async fn dispatch_with_blocks(
         send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Thinking).await;
     }
 
-    match handle.send_message_with_blocks(agent_id, blocks).await {
+    // Continuous typing indicator (see spawn_typing_loop doc)
+    let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
+
+    let result = handle.send_message_with_blocks(agent_id, blocks).await;
+
+    typing_task.abort();
+
+    match result {
         Ok(response) => {
             if lifecycle_reactions {
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Done).await;

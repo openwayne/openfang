@@ -55,6 +55,10 @@ pub struct PromptContext {
     pub peer_agents: Vec<(String, String, String)>,
     /// Current date/time string for temporal awareness.
     pub current_date: Option<String>,
+    /// Sender identity (e.g. WhatsApp phone number, Telegram user ID).
+    pub sender_id: Option<String>,
+    /// Sender display name.
+    pub sender_name: Option<String>,
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -145,6 +149,13 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     if !ctx.is_subagent {
         if let Some(ref channel) = ctx.channel_type {
             sections.push(build_channel_section(channel));
+        }
+    }
+
+    // Section 9.1 — Sender Identity (skip for subagents)
+    if !ctx.is_subagent {
+        if let Some(sender_line) = build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref()) {
+            sections.push(sender_line);
         }
     }
 
@@ -417,6 +428,15 @@ fn build_channel_section(channel: &str) -> String {
          You are responding via {channel}. Keep messages under {limit} chars.\n\
          {hints}"
     )
+}
+
+fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> Option<String> {
+    match (sender_name, sender_id) {
+        (Some(name), Some(id)) => Some(format!("## Sender\nMessage from: {name} ({id})")),
+        (Some(name), None) => Some(format!("## Sender\nMessage from: {name}")),
+        (None, Some(id)) => Some(format!("## Sender\nMessage from: {id}")),
+        (None, None) => None,
+    }
 }
 
 fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {

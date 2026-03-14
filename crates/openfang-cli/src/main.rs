@@ -113,7 +113,11 @@ enum Commands {
         quick: bool,
     },
     /// Start the OpenFang kernel daemon (API server + kernel).
-    Start,
+    Start {
+        /// Auto-approve all tool calls (no confirmation prompts).
+        #[arg(long)]
+        yolo: bool,
+    },
     /// Stop the running daemon.
     Stop,
     /// Manage agents (new, list, chat, kill, spawn) [*].
@@ -918,7 +922,7 @@ fn main() {
         }
         Some(Commands::Tui) => tui::run(cli.config),
         Some(Commands::Init { quick }) => cmd_init(quick),
-        Some(Commands::Start) => cmd_start(cli.config),
+        Some(Commands::Start { yolo }) => cmd_start(cli.config, yolo),
         Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Agent(sub)) => match sub {
             AgentCommands::New { template } => cmd_agent_new(cli.config, template),
@@ -1011,7 +1015,7 @@ fn main() {
             ModelsCommands::Set { model } => cmd_models_set(model),
         },
         Some(Commands::Gateway(sub)) => match sub {
-            GatewayCommands::Start => cmd_start(cli.config),
+            GatewayCommands::Start => cmd_start(cli.config, false),
             GatewayCommands::Stop => cmd_stop(),
             GatewayCommands::Status { json } => cmd_status(cli.config, json),
         },
@@ -1456,7 +1460,7 @@ decay_rate = 0.05
     }
 }
 
-fn cmd_start(config: Option<PathBuf>) {
+fn cmd_start(config: Option<PathBuf>, yolo: bool) {
     if let Some(base) = find_daemon() {
         ui::error_with_fix(
             &format!("Daemon already running at {base}"),
@@ -1472,7 +1476,12 @@ fn cmd_start(config: Option<PathBuf>) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let kernel = match OpenFangKernel::boot(config.as_deref()) {
+        let mut kernel_config = openfang_kernel::config::load_config(config.as_deref());
+        if yolo {
+            kernel_config.approval.auto_approve = true;
+            kernel_config.approval.apply_shorthands();
+        }
+        let kernel = match OpenFangKernel::boot_with_config(kernel_config) {
             Ok(k) => k,
             Err(e) => {
                 boot_kernel_error(&e);

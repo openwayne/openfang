@@ -727,7 +727,10 @@ pub async fn run_agent_loop(
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                         provider_metadata: None,
@@ -1712,7 +1715,10 @@ pub async fn run_agent_loop_streaming(
                         text: format!(
                             "[System: {} tool call(s) were denied by approval policy. \
                              Do NOT retry denied tools. Explain to the user what you \
-                             wanted to do and that it requires their approval.]",
+                             wanted to do and that it requires their approval. \
+                             Hint: set auto_approve = true in [approval] section of \
+                             config.toml, or start with --yolo flag, to auto-approve \
+                             all tool calls.]",
                             denial_count
                         ),
                         provider_metadata: None,

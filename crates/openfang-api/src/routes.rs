@@ -140,13 +140,19 @@ pub async fn spawn_agent(
 
     let name = manifest.name.clone();
     match state.kernel.spawn_agent(manifest) {
-        Ok(id) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!(SpawnResponse {
-                agent_id: id.to_string(),
-                name,
-            })),
-        ),
+        Ok(id) => {
+            // Register in channel router so binding resolution finds the new agent
+            if let Some(ref mgr) = *state.bridge_manager.lock().await {
+                mgr.router().register_agent(name.clone(), id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!(SpawnResponse {
+                    agent_id: id.to_string(),
+                    name,
+                })),
+            )
+        }
         Err(e) => {
             tracing::warn!("Spawn failed: {e}");
             (
@@ -357,6 +363,12 @@ pub async fn send_message(
             inject_attachments_into_session(&state.kernel, agent_id, image_blocks);
         }
     }
+
+    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
+    // so the agent loop can see who sent the message. Requires extending
+    // send_message_with_handle to accept optional sender metadata.
+    let _sender_id = req.sender_id;
+    let _sender_name = req.sender_name;
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
@@ -1336,6 +1348,10 @@ pub async fn send_message_stream(
         )
             .into_response();
     }
+
+    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
+    let _sender_id = req.sender_id;
+    let _sender_name = req.sender_name;
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     let (rx, _handle) =
@@ -8616,6 +8632,11 @@ pub async fn clone_agent(
         .kernel
         .registry
         .update_identity(new_id, source.identity.clone());
+
+    // Register in channel router so binding resolution finds the cloned agent
+    if let Some(ref mgr) = *state.bridge_manager.lock().await {
+        mgr.router().register_agent(req.new_name.clone(), new_id);
+    }
 
     (
         StatusCode::CREATED,

@@ -811,7 +811,7 @@
                               <div class="model-switcher-item" :class="{'active': currentAgent && m.id === currentAgent.model_name}" @click="switchModel(m)" @mouseenter="modelSwitcherIdx = filteredSwitcherModels.indexOf(m)">
                                 <div style="flex:1;min-width:0">
                                   <div style="display:flex;align-items:center;gap:6px">
-                                    <span class="model-switcher-item-name" x-text="m.display_name || m.id"></span>
+                                    <span class="model-switcher-item-name" x-text="m.provider + ':' + (m.display_name || m.id)"></span>
                                     <span class="model-switcher-tier" :class="'tier-' + (m.tier || 'balanced').toLowerCase()" x-text="m.tier || 'Balanced'"></span>
                                   </div>
                                   <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
