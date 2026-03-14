@@ -364,6 +364,12 @@ pub async fn send_message(
         }
     }
 
+    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
+    // so the agent loop can see who sent the message. Requires extending
+    // send_message_with_handle to accept optional sender metadata.
+    let _sender_id = req.sender_id;
+    let _sender_name = req.sender_name;
+
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     match state
         .kernel
@@ -1342,6 +1348,10 @@ pub async fn send_message_stream(
         )
             .into_response();
     }
+
+    // TODO(#597): Thread req.sender_id / req.sender_name into PromptContext
+    let _sender_id = req.sender_id;
+    let _sender_name = req.sender_name;
 
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     let (rx, _handle) =
