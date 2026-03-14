@@ -7007,8 +7007,8 @@ pub async fn set_provider_key(
                 "\n[default_model]\nprovider = \"{}\"\nmodel = \"{}\"\napi_key_env = \"{}\"\n",
                 name, model_id, env_var
             );
+            backup_config(&config_path);
             if let Ok(existing) = std::fs::read_to_string(&config_path) {
-                // Remove existing [default_model] section if present, then append
                 let cleaned = remove_toml_section(&existing, "default_model");
                 let _ = std::fs::write(&config_path, format!("{}\n{}", cleaned.trim(), update_toml));
             } else {
@@ -10839,6 +10839,12 @@ pub async fn auth_check(
 }
 
 /// Remove a `[section]` and its contents from a TOML string.
+#[allow(dead_code)]
+fn backup_config(config_path: &std::path::Path) {
+    let backup = config_path.with_extension("toml.bak");
+    let _ = std::fs::copy(config_path, backup);
+}
+
 fn remove_toml_section(content: &str, section: &str) -> String {
     let header = format!("[{}]", section);
     let mut result = String::new();

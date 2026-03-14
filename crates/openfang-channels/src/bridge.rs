@@ -780,7 +780,7 @@ async fn dispatch_message(
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
             }
             warn!("Agent error for {agent_id}: {e}");
-            let err_msg = format!("Agent error: {e}");
+            let err_msg = sanitize_agent_error(&e.to_string());
             send_response(
                 adapter,
                 &message.sender,
@@ -801,6 +801,76 @@ async fn dispatch_message(
                 .await;
         }
     }
+}
+
+fn sanitize_agent_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+
+    if lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("429")
+        || lower.contains("too many requests")
+        || lower.contains("resource_exhausted")
+    {
+        return "Rate limit reached, please try again later.".to_string();
+    }
+
+    if lower.contains("authentication")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid api key")
+        || lower.contains("invalid x-goog-api-key")
+        || lower.contains("incorrect api key")
+        || lower.contains("permission denied")
+        || lower.contains("billing")
+        || lower.contains("quota exceeded")
+    {
+        return "Service temporarily unavailable.".to_string();
+    }
+
+    if lower.contains("context length")
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("maximum context")
+        || lower.contains("max_tokens")
+        || lower.contains("context window")
+    {
+        return "Message too long, try a shorter request.".to_string();
+    }
+
+    if lower.contains("overloaded")
+        || lower.contains("503")
+        || lower.contains("502")
+        || lower.contains("server error")
+        || lower.contains("internal error")
+    {
+        return "The AI service is temporarily overloaded, please try again shortly.".to_string();
+    }
+
+    if lower.contains("timeout") || lower.contains("timed out") || lower.contains("deadline") {
+        return "Request timed out, please try again.".to_string();
+    }
+
+    if lower.contains("model not found") || lower.contains("model_not_found") {
+        return "The requested model is currently unavailable.".to_string();
+    }
+
+    let cleaned = raw
+        .strip_prefix("LLM driver error: ")
+        .or_else(|| raw.strip_prefix("Agent error: "))
+        .unwrap_or(raw);
+
+    if let Some(first_sentence_end) = cleaned.find(". ") {
+        let first = &cleaned[..=first_sentence_end];
+        if first.len() < cleaned.len() / 2 {
+            return format!("Agent error: {first}");
+        }
+    }
+
+    if cleaned.contains('{') || cleaned.len() > 200 {
+        return "Something went wrong processing your request. Please try again.".to_string();
+    }
+
+    format!("Agent error: {cleaned}")
 }
 
 /// Detect image format from the first few magic bytes.
@@ -1012,7 +1082,7 @@ async fn dispatch_with_blocks(
                 send_lifecycle_reaction(adapter, &message.sender, msg_id, AgentPhase::Error).await;
             }
             warn!("Agent error for {agent_id}: {e}");
-            let err_msg = format!("Agent error: {e}");
+            let err_msg = sanitize_agent_error(&e.to_string());
             send_response(
                 adapter,
                 &message.sender,

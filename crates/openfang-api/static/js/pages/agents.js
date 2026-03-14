@@ -393,7 +393,7 @@ function agentsPage() {
     },
 
     // ── Multi-step wizard navigation ──
-    openSpawnWizard() {
+    async openSpawnWizard() {
       this.showSpawnModal = true;
       this.spawnStep = 1;
       this.spawnMode = 'wizard';
@@ -401,8 +401,18 @@ function agentsPage() {
       this.selectedPreset = '';
       this.soulContent = '';
       this.spawnForm.name = '';
+      this.spawnForm.provider = 'groq';
+      this.spawnForm.model = 'llama-3.3-70b-versatile';
       this.spawnForm.systemPrompt = 'You are a helpful assistant.';
       this.spawnForm.profile = 'full';
+      try {
+        var res = await fetch('/api/status');
+        if (res.ok) {
+          var status = await res.json();
+          if (status.default_provider) this.spawnForm.provider = status.default_provider;
+          if (status.default_model) this.spawnForm.model = status.default_model;
+        }
+      } catch(e) { /* keep hardcoded defaults */ }
     },
 
     nextStep() {

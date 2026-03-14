@@ -794,11 +794,36 @@ enum SystemCommands {
     },
 }
 
+fn config_log_level() -> String {
+    let config_path = if let Ok(home) = std::env::var("OPENFANG_HOME") {
+        std::path::PathBuf::from(home).join("config.toml")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".openfang")
+            .join("config.toml")
+    };
+    if let Ok(content) = std::fs::read_to_string(config_path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("log_level") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let level = val.trim().trim_matches('"').trim_matches('\'');
+                    if !level.is_empty() {
+                        return level.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "info".to_string()
+}
+
 fn init_tracing_stderr() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
         )
         .init();
 }
@@ -824,7 +849,7 @@ fn init_tracing_file() {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(config_log_level())),
                 )
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
@@ -4691,6 +4716,8 @@ fn cmd_config_set(key: &str, value: &str) {
         std::process::exit(1);
     });
 
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
+
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
         std::process::exit(1);
@@ -4756,6 +4783,8 @@ fn cmd_config_unset(key: &str) {
         ui::error(&format!("Failed to serialize config: {e}"));
         std::process::exit(1);
     });
+
+    let _ = std::fs::copy(&config_path, config_path.with_extension("toml.bak"));
 
     std::fs::write(&config_path, &serialized).unwrap_or_else(|e| {
         ui::error(&format!("Failed to write config: {e}"));
