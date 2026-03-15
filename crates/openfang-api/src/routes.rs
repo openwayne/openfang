@@ -6953,7 +6953,10 @@ pub async fn set_provider_key(
             })
     };
 
-    // Write to secrets.env file
+    // Store in vault (best-effort — no-op if vault not initialized)
+    state.kernel.store_credential(&env_var, &key);
+
+    // Write to secrets.env file (dual-write for backward compat / vault corruption recovery)
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
     if let Err(e) = write_secret_env(&secrets_path, &env_var, &key) {
         return (
@@ -7114,6 +7117,9 @@ pub async fn delete_provider_key(
             Json(serde_json::json!({"error": "Provider does not require an API key"})),
         );
     }
+
+    // Remove from vault (best-effort)
+    state.kernel.remove_credential(&env_var);
 
     // Remove from secrets.env
     let secrets_path = state.kernel.config.home_dir.join("secrets.env");
@@ -10267,7 +10273,10 @@ pub async fn copilot_oauth_poll(
             Json(serde_json::json!({"status": "pending"})),
         ),
         openfang_runtime::copilot_oauth::DeviceFlowStatus::Complete { access_token } => {
-            // Save to secrets.env
+            // Store in vault (best-effort)
+            state.kernel.store_credential("GITHUB_TOKEN", &access_token);
+
+            // Save to secrets.env (dual-write)
             let secrets_path = state.kernel.config.home_dir.join("secrets.env");
             if let Err(e) = write_secret_env(&secrets_path, "GITHUB_TOKEN", &access_token) {
                 return (

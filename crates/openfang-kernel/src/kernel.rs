@@ -117,6 +117,8 @@ pub struct OpenFangKernel {
         Option<Arc<dyn openfang_runtime::embedding::EmbeddingDriver + Send + Sync>>,
     /// Hand registry — curated autonomous capability packages.
     pub hand_registry: openfang_hands::registry::HandRegistry,
+    /// Credential resolver — vault → dotenv → env var priority chain.
+    pub credential_resolver: std::sync::Mutex<openfang_extensions::credentials::CredentialResolver>,
     /// Extension/integration registry (bundled MCP templates + install state).
     pub extension_registry: std::sync::RwLock<openfang_extensions::registry::IntegrationRegistry>,
     /// Integration health monitor.
@@ -562,16 +564,43 @@ impl OpenFangKernel {
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,
         );
 
+        // Initialize credential resolver (vault → dotenv → env var)
+        let credential_resolver = {
+            let vault_path = config.home_dir.join("vault.enc");
+            let vault = if vault_path.exists() {
+                let mut v = openfang_extensions::vault::CredentialVault::new(vault_path);
+                match v.unlock() {
+                    Ok(()) => {
+                        info!("Credential vault unlocked ({} entries)", v.len());
+                        Some(v)
+                    }
+                    Err(e) => {
+                        warn!("Credential vault exists but could not unlock: {e} — falling back to env vars");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let dotenv_path = config.home_dir.join(".env");
+            openfang_extensions::credentials::CredentialResolver::new(
+                vault,
+                Some(&dotenv_path),
+            )
+        };
+
         // Create LLM driver.
-        // For the API key, try: 1) explicit api_key_env from config, 2) provider_api_keys
-        // mapping, 3) auth profiles, 4) convention {PROVIDER}_API_KEY. This ensures
-        // custom providers (e.g. nvidia, azure) work without hardcoded env var names.
-        let default_api_key = if !config.default_model.api_key_env.is_empty() {
-            std::env::var(&config.default_model.api_key_env).ok()
-        } else {
-            // api_key_env not set — resolve using provider_api_keys / convention
-            let env_var = config.resolve_api_key_env(&config.default_model.provider);
-            std::env::var(&env_var).ok()
+        // For the API key, try: 1) credential resolver (vault → dotenv → env var),
+        // 2) provider_api_keys mapping, 3) convention {PROVIDER}_API_KEY.
+        let default_api_key = {
+            let env_var = if !config.default_model.api_key_env.is_empty() {
+                config.default_model.api_key_env.clone()
+            } else {
+                config.resolve_api_key_env(&config.default_model.provider)
+            };
+            credential_resolver
+                .resolve(&env_var)
+                .map(|z: zeroize::Zeroizing<String>| z.to_string())
         };
         let driver_config = DriverConfig {
             provider: config.default_model.provider.clone(),
@@ -600,7 +629,7 @@ impl OpenFangKernel {
                 if let Some((provider, model, env_var)) = drivers::detect_available_provider() {
                     let auto_config = DriverConfig {
                         provider: provider.to_string(),
-                        api_key: std::env::var(env_var).ok(),
+                        api_key: credential_resolver.resolve(env_var).map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
                         skip_permissions: true,
                     };
@@ -633,12 +662,13 @@ impl OpenFangKernel {
             model_chain.push((d.clone(), String::new()));
         }
         for fb in &config.fallback_providers {
-            let fb_api_key = if !fb.api_key_env.is_empty() {
-                std::env::var(&fb.api_key_env).ok()
-            } else {
-                // Resolve using provider_api_keys / convention for custom providers
-                let env_var = config.resolve_api_key_env(&fb.provider);
-                std::env::var(&env_var).ok()
+            let fb_api_key = {
+                let env_var = if !fb.api_key_env.is_empty() {
+                    fb.api_key_env.clone()
+                } else {
+                    config.resolve_api_key_env(&fb.provider)
+                };
+                credential_resolver.resolve(&env_var).map(|z: zeroize::Zeroizing<String>| z.to_string())
             };
             let fb_config = DriverConfig {
                 provider: fb.provider.clone(),
@@ -994,6 +1024,7 @@ impl OpenFangKernel {
             pairing,
             embedding_driver,
             hand_registry,
+            credential_resolver: std::sync::Mutex::new(credential_resolver),
             extension_registry: std::sync::RwLock::new(extension_registry),
             extension_health,
             effective_mcp_servers: std::sync::RwLock::new(all_mcp_servers),
@@ -3938,16 +3969,23 @@ impl OpenFangKernel {
                                 .await
                                 {
                                     Ok(Ok(result)) => {
-                                        tracing::info!(job = %job_name, "Cron job completed successfully");
-                                        kernel.cron_scheduler.record_success(job_id);
-                                        // Deliver response to configured channel
-                                        cron_deliver_response(
+                                        match cron_deliver_response(
                                             &kernel,
                                             agent_id,
                                             &result.response,
                                             &delivery,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(job = %job_name, "Cron job completed successfully");
+                                                kernel.cron_scheduler.record_success(job_id);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
+                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                            }
+                                        }
                                     }
                                     Ok(Err(e)) => {
                                         let err_msg = format!("{e}");
@@ -3997,15 +4035,23 @@ impl OpenFangKernel {
                                 .await
                                 {
                                     Ok(Ok((_run_id, output))) => {
-                                        tracing::info!(job = %job_name, "Cron workflow completed");
-                                        kernel.cron_scheduler.record_success(job_id);
-                                        cron_deliver_response(
+                                        match cron_deliver_response(
                                             &kernel,
                                             agent_id,
                                             &output,
                                             &delivery,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(job = %job_name, "Cron workflow completed");
+                                                kernel.cron_scheduler.record_success(job_id);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(job = %job_name, error = %e, "Cron workflow delivery failed");
+                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                            }
+                                        }
                                     }
                                     Ok(Err(e)) => {
                                         let err_msg = format!("{e}");
@@ -4322,6 +4368,37 @@ impl OpenFangKernel {
     /// stored in the model catalog but NOT in `self.config.provider_urls` (which is
     /// the boot-time snapshot). This helper checks both sources so that custom
     /// providers work immediately without a daemon restart.
+    /// Resolve a credential by env var name using the vault → dotenv → env var chain.
+    pub fn resolve_credential(&self, key: &str) -> Option<String> {
+        self.credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resolve(key)
+            .map(|z| z.to_string())
+    }
+
+    /// Store a credential in the vault (best-effort — falls through silently if no vault).
+    pub fn store_credential(&self, key: &str, value: &str) {
+        let mut resolver = self
+            .credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = resolver.store_in_vault(key, zeroize::Zeroizing::new(value.to_string())) {
+            debug!("Vault store skipped for {key}: {e}");
+        }
+    }
+
+    /// Remove a credential from the vault (best-effort — falls through silently if no vault).
+    pub fn remove_credential(&self, key: &str) {
+        let mut resolver = self
+            .credential_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = resolver.remove_from_vault(key) {
+            debug!("Vault remove skipped for {key}: {e}");
+        }
+    }
+
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
         // 1. Boot-time config (from config.toml [provider_urls])
         if let Some(url) = self.config.provider_urls.get(provider) {
@@ -4357,33 +4434,26 @@ impl OpenFangKernel {
         let has_custom_key = manifest.model.api_key_env.is_some();
         let has_custom_url = manifest.model.base_url.is_some();
 
-        // Always create a fresh driver by reading current env vars.
-        // This ensures API keys saved at runtime (via dashboard POST
-        // /api/providers/{name}/key which calls std::env::set_var) are
-        // picked up immediately — the boot-time default_driver cache is
-        // only used as a final fallback when driver creation fails.
+        // Always create a fresh driver by resolving credentials from the
+        // vault → dotenv → env var chain. This ensures API keys saved at
+        // runtime (via dashboard or vault) are picked up immediately.
         let primary = {
             let api_key = if has_custom_key {
-                // Agent explicitly set an API key env var — use it
                 manifest
                     .model
                     .api_key_env
                     .as_ref()
-                    .and_then(|env| std::env::var(env).ok())
+                    .and_then(|env| self.resolve_credential(env))
             } else if agent_provider == default_provider {
-                // Same provider as effective default — use its env var
                 if !effective_default.api_key_env.is_empty() {
-                    std::env::var(&effective_default.api_key_env).ok()
+                    self.resolve_credential(&effective_default.api_key_env)
                 } else {
                     let env_var = self.config.resolve_api_key_env(agent_provider);
-                    std::env::var(&env_var).ok()
+                    self.resolve_credential(&env_var)
                 }
             } else {
-                // Different provider — check auth profiles, provider_api_keys,
-                // and convention-based env var. For custom providers (not in the
-                // hardcoded list), this is the primary path for API key resolution.
                 let env_var = self.config.resolve_api_key_env(agent_provider);
-                std::env::var(&env_var).ok()
+                self.resolve_credential(&env_var)
             };
 
             // Don't inherit default provider's base_url when switching providers.
@@ -5368,15 +5438,15 @@ async fn cron_deliver_response(
     agent_id: AgentId,
     response: &str,
     delivery: &openfang_types::scheduler::CronDelivery,
-) {
+) -> Result<(), String> {
     use openfang_types::scheduler::CronDelivery;
 
     if response.is_empty() {
-        return;
+        return Ok(());
     }
 
     match delivery {
-        CronDelivery::None => {}
+        CronDelivery::None => Ok(()),
         CronDelivery::Channel { channel, to } => {
             tracing::debug!(channel = %channel, to = %to, "Cron: delivering to channel");
             // Persist as last channel for this agent (survives restarts)
@@ -5384,6 +5454,17 @@ async fn cron_deliver_response(
             let _ = kernel
                 .memory
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
+            // Deliver via the registered channel adapter
+            kernel
+                .send_channel_message(channel, to, response, None)
+                .await
+                .map(|_| {
+                    tracing::info!(channel = %channel, to = %to, "Cron: delivered to channel");
+                })
+                .map_err(|e| {
+                    tracing::warn!(channel = %channel, to = %to, error = %e, "Cron channel delivery failed");
+                    format!("channel delivery failed: {e}")
+                })
         }
         CronDelivery::LastChannel => {
             match kernel
@@ -5394,15 +5475,23 @@ async fn cron_deliver_response(
                     let channel = val["channel"].as_str().unwrap_or("");
                     let recipient = val["recipient"].as_str().unwrap_or("");
                     if !channel.is_empty() && !recipient.is_empty() {
-                        tracing::info!(
-                            channel = %channel,
-                            recipient = %recipient,
-                            "Cron: delivering to last channel"
-                        );
+                        kernel
+                            .send_channel_message(channel, recipient, response, None)
+                            .await
+                            .map(|_| {
+                                tracing::info!(channel = %channel, recipient = %recipient, "Cron: delivered to last channel");
+                            })
+                            .map_err(|e| {
+                                tracing::warn!(channel = %channel, recipient = %recipient, error = %e, "Cron last-channel delivery failed");
+                                format!("last-channel delivery failed: {e}")
+                            })
+                    } else {
+                        Ok(())
                     }
                 }
                 _ => {
                     tracing::debug!("Cron: no last channel found for agent {}", agent_id);
+                    Ok(())
                 }
             }
         }
@@ -5410,22 +5499,24 @@ async fn cron_deliver_response(
             tracing::debug!(url = %url, "Cron: delivering via webhook");
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .build();
-            if let Ok(client) = client {
-                let payload = serde_json::json!({
-                    "agent_id": agent_id.to_string(),
-                    "response": response,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                });
-                match client.post(url).json(&payload).send().await {
-                    Ok(resp) => {
-                        tracing::debug!(status = %resp.status(), "Cron webhook delivered");
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Cron webhook delivery failed");
-                    }
-                }
-            }
+                .build()
+                .map_err(|e| format!("webhook client init failed: {e}"))?;
+            let payload = serde_json::json!({
+                "agent_id": agent_id.to_string(),
+                "response": response,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            let resp = client
+                .post(url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Cron webhook delivery failed");
+                    format!("webhook delivery failed: {e}")
+                })?;
+            tracing::debug!(status = %resp.status(), "Cron webhook delivered");
+            Ok(())
         }
     }
 }

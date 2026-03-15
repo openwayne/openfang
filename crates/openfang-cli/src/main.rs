@@ -4813,6 +4813,10 @@ fn cmd_config_set_key(provider: &str) {
         return;
     }
 
+    // Try vault first (best-effort)
+    save_credential_prefer_vault(&env_var, &key);
+
+    // Always save to dotenv as fallback
     match dotenv::save_env_key(&env_var, &key) {
         Ok(()) => {
             ui::success(&format!("Saved {env_var} to ~/.openfang/.env"));
@@ -4834,6 +4838,18 @@ fn cmd_config_set_key(provider: &str) {
 
 fn cmd_config_delete_key(provider: &str) {
     let env_var = provider_to_env_var(provider);
+
+    // Remove from vault (best-effort)
+    {
+        let home = openfang_home();
+        let vault_path = home.join("vault.enc");
+        if vault_path.exists() {
+            let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+            if vault.unlock().is_ok() {
+                let _ = vault.remove(&env_var);
+            }
+        }
+    }
 
     match dotenv::remove_env_key(&env_var) {
         Ok(()) => ui::success(&format!("Removed {env_var} from ~/.openfang/.env")),
@@ -4861,6 +4877,26 @@ fn cmd_config_test_key(provider: &str) {
         println!("{}", "FAILED (401/403)".bright_red());
         ui::hint(&format!("Update key: openfang config set-key {provider}"));
         std::process::exit(1);
+    }
+}
+
+/// Try to store a credential in the vault first; silently falls through if vault
+/// is not initialized or cannot be unlocked. The caller should always also
+/// write to dotenv as a fallback.
+fn save_credential_prefer_vault(env_var: &str, value: &str) {
+    use zeroize::Zeroizing;
+
+    let home = openfang_home();
+    let vault_path = home.join("vault.enc");
+    if !vault_path.exists() {
+        return;
+    }
+    let mut vault = openfang_extensions::vault::CredentialVault::new(vault_path);
+    if vault.unlock().is_err() {
+        return;
+    }
+    if let Ok(()) = vault.set(env_var.to_string(), Zeroizing::new(value.to_string())) {
+        println!("  {}", "Also stored in encrypted vault".dimmed());
     }
 }
 
