@@ -458,6 +458,19 @@ fn spawn_typing_loop(
     })
 }
 
+/// Extract the sender's user identity from a message.
+///
+/// Some adapters (e.g. Slack) set `platform_id` to the channel/conversation ID
+/// (needed for the send path) and store the actual user ID in metadata.
+/// This helper returns the user ID for RBAC and rate limiting.
+fn sender_user_id(message: &ChannelMessage) -> &str {
+    message
+        .metadata
+        .get("sender_user_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&message.sender.platform_id)
+}
+
 /// Dispatch a single incoming message — handles bot commands or routes to an agent.
 ///
 /// Applies per-channel policies (DM/group filtering, rate limiting, formatting, threading).
@@ -539,7 +552,7 @@ async fn dispatch_message(
     if let Some(ref ov) = overrides {
         if ov.rate_limit_per_user > 0 {
             if let Err(msg) =
-                rate_limiter.check(ct_str, &message.sender.platform_id, ov.rate_limit_per_user)
+                rate_limiter.check(ct_str, sender_user_id(message), ov.rate_limit_per_user)
             {
                 send_response(adapter, &message.sender, msg, thread_id, output_format).await;
                 return;
@@ -654,7 +667,7 @@ async fn dispatch_message(
         if !targets.is_empty() {
             // RBAC check applies to broadcast too
             if let Err(denied) = handle
-                .authorize_channel_user(ct_str, &message.sender.platform_id, "chat")
+                .authorize_channel_user(ct_str, sender_user_id(message), "chat")
                 .await
             {
                 send_response(
@@ -760,7 +773,7 @@ async fn dispatch_message(
 
     // RBAC: authorize the user before forwarding to agent
     if let Err(denied) = handle
-        .authorize_channel_user(ct_str, &message.sender.platform_id, "chat")
+        .authorize_channel_user(ct_str, sender_user_id(message), "chat")
         .await
     {
         send_response(
@@ -1086,7 +1099,7 @@ async fn dispatch_with_blocks(
 
     // RBAC check
     if let Err(denied) = handle
-        .authorize_channel_user(ct_str, &message.sender.platform_id, "chat")
+        .authorize_channel_user(ct_str, sender_user_id(message), "chat")
         .await
     {
         send_response(
