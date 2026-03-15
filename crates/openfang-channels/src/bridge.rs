@@ -820,14 +820,16 @@ async fn dispatch_message(
             }
             warn!("Agent error for {agent_id}: {e}");
             let err_msg = sanitize_agent_error(&e.to_string());
-            send_response(
-                adapter,
-                &message.sender,
-                err_msg.clone(),
-                thread_id,
-                output_format,
-            )
-            .await;
+            if !adapter.suppress_error_responses() {
+                send_response(
+                    adapter,
+                    &message.sender,
+                    err_msg.clone(),
+                    thread_id,
+                    output_format,
+                )
+                .await;
+            }
             handle
                 .record_delivery(
                     agent_id,
@@ -1130,14 +1132,16 @@ async fn dispatch_with_blocks(
             }
             warn!("Agent error for {agent_id}: {e}");
             let err_msg = sanitize_agent_error(&e.to_string());
-            send_response(
-                adapter,
-                &message.sender,
-                err_msg.clone(),
-                thread_id,
-                output_format,
-            )
-            .await;
+            if !adapter.suppress_error_responses() {
+                send_response(
+                    adapter,
+                    &message.sender,
+                    err_msg.clone(),
+                    thread_id,
+                    output_format,
+                )
+                .await;
+            }
             handle
                 .record_delivery(
                     agent_id,

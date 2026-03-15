@@ -526,6 +526,10 @@ impl ChannelAdapter for MastodonAdapter {
         Ok(())
     }
 
+    fn suppress_error_responses(&self) -> bool {
+        true
+    }
+
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
