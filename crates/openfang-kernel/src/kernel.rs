@@ -4373,26 +4373,79 @@ impl OpenFangKernel {
             let mut chain: Vec<(std::sync::Arc<dyn openfang_runtime::llm_driver::LlmDriver>, String)> =
                 vec![(primary.clone(), String::new())];
             for fb in &manifest.fallback_models {
+                let provider_is_default = fb.provider.is_empty() || fb.provider == "default";
+                let model_is_default = fb.model.is_empty() || fb.model == "default";
+                let inferred = if model_is_default {
+                    None
+                } else {
+                    self.model_catalog
+                        .read()
+                        .ok()
+                        .and_then(|cat| cat.find_model(&fb.model).map(|entry| (entry.provider.clone(), entry.id.clone())))
+                };
+                let resolved_provider = if provider_is_default {
+                    inferred
+                        .as_ref()
+                        .map(|(provider, _)| provider.clone())
+                        .unwrap_or_else(|| default_provider.clone())
+                } else {
+                    fb.provider.clone()
+                };
+                let resolved_model = if model_is_default {
+                    strip_provider_prefix(&effective_default.model, &resolved_provider)
+                } else {
+                    let raw_model = inferred
+                        .as_ref()
+                        .map(|(_, model)| model.as_str())
+                        .unwrap_or(&fb.model);
+                    strip_provider_prefix(raw_model, &resolved_provider)
+                };
+
+                debug!(
+                    original_provider = %fb.provider,
+                    original_model = %fb.model,
+                    resolved_provider = %resolved_provider,
+                    resolved_model = %resolved_model,
+                    "Resolved fallback model target"
+                );
+
                 let fb_api_key = if let Some(env) = &fb.api_key_env {
                     std::env::var(env).ok()
+                } else if resolved_provider == *default_provider {
+                    if !effective_default.api_key_env.is_empty() {
+                        std::env::var(&effective_default.api_key_env).ok()
+                    } else {
+                        let env_var = self.config.resolve_api_key_env(&resolved_provider);
+                        std::env::var(&env_var).ok()
+                    }
                 } else {
-                    // Resolve using provider_api_keys / convention for custom providers
-                    let env_var = self.config.resolve_api_key_env(&fb.provider);
+                    let env_var = self.config.resolve_api_key_env(&resolved_provider);
                     std::env::var(&env_var).ok()
                 };
                 let config = DriverConfig {
-                    provider: fb.provider.clone(),
+                    provider: resolved_provider.clone(),
                     api_key: fb_api_key,
-                    base_url: fb
-                        .base_url
-                        .clone()
-                        .or_else(|| self.lookup_provider_url(&fb.provider)),
+                    base_url: fb.base_url.clone().or_else(|| {
+                        if resolved_provider == *default_provider {
+                            effective_default
+                                .base_url
+                                .clone()
+                                .or_else(|| self.lookup_provider_url(&resolved_provider))
+                        } else {
+                            self.lookup_provider_url(&resolved_provider)
+                        }
+                    }),
                     skip_permissions: true,
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push((d, fb.model.clone())),
+                    Ok(d) => chain.push((d, resolved_model)),
                     Err(e) => {
-                        warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
+                        warn!(
+                            provider = %resolved_provider,
+                            model = %fb.model,
+                            error = %e,
+                            "Fallback driver failed to init"
+                        );
                     }
                 }
             }

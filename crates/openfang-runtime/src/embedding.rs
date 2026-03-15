@@ -64,6 +64,7 @@ pub trait EmbeddingDriver: Send + Sync {
 /// OpenAI, Groq, Together, Fireworks, Ollama, vLLM, LM Studio, etc.
 pub struct OpenAIEmbeddingDriver {
     api_key: Zeroizing<String>,
+    provider: String,
     base_url: String,
     model: String,
     client: reqwest::Client,
@@ -94,6 +95,7 @@ impl OpenAIEmbeddingDriver {
 
         Ok(Self {
             api_key: Zeroizing::new(config.api_key),
+            provider: config.provider,
             base_url: config.base_url,
             model: config.model,
             client: reqwest::Client::new(),
@@ -138,14 +140,32 @@ impl EmbeddingDriver for OpenAIEmbeddingDriver {
             req = req.header("Authorization", format!("Bearer {}", self.api_key.as_str()));
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| EmbeddingError::Http(e.to_string()))?;
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!(
+                    provider = %self.provider,
+                    model = %self.model,
+                    base_url = %self.base_url,
+                    error = %e,
+                    "Embedding request failed"
+                );
+                return Err(EmbeddingError::Http(e.to_string()));
+            }
+        };
         let status = resp.status().as_u16();
 
         if status != 200 {
             let body_text = resp.text().await.unwrap_or_default();
+            let body_preview: String = body_text.chars().take(500).collect();
+            warn!(
+                provider = %self.provider,
+                model = %self.model,
+                base_url = %self.base_url,
+                status,
+                body = %body_preview,
+                "Embedding API returned non-200 response"
+            );
             return Err(EmbeddingError::Api {
                 status,
                 message: body_text,

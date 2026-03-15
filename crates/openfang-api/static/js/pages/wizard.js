@@ -332,7 +332,7 @@ function wizardPage() {
     },
 
     get popularProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code', 'copilot-cli'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) >= 0;
       }).sort(function(a, b) {
@@ -341,7 +341,7 @@ function wizardPage() {
     },
 
     get otherProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code', 'copilot-cli'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) < 0;
       });
@@ -368,7 +368,8 @@ function wizardPage() {
         perplexity: { url: 'https://www.perplexity.ai/settings/api', text: 'Get your key from Perplexity Settings' },
         cohere: { url: 'https://dashboard.cohere.com/api-keys', text: 'Get your key from the Cohere Dashboard' },
         xai: { url: 'https://console.x.ai/', text: 'Get your key from the xAI Console' },
-        'claude-code': { url: 'https://docs.anthropic.com/en/docs/claude-code', text: 'Install: npm install -g @anthropic-ai/claude-code && claude auth (no API key needed)' }
+        'claude-code': { url: 'https://docs.anthropic.com/en/docs/claude-code', text: 'Install: npm install -g @anthropic-ai/claude-code && claude auth (no API key needed)' },
+        'copilot-cli': { url: 'https://github.com/github/copilot-cli', text: 'Install: npm install -g @githubnext/github-copilot-cli && github-copilot-cli auth (no API key needed)' }
       };
       return help[id] || null;
     },
@@ -443,6 +444,27 @@ function wizardPage() {
       this.testingProvider = false;
     },
 
+    async detectCopilotCli() {
+      this.testingProvider = true;
+      this.testResult = null;
+      try {
+        var result = await OpenFangAPI.post('/api/providers/copilot-cli/test', {});
+        this.testResult = result;
+        if (result.status === 'ok') {
+          this.keySaved = true;
+          this.setupSummary.provider = 'GitHub Copilot CLI';
+          OpenFangToast.success('GitHub Copilot CLI detected (' + (result.latency_ms || '?') + 'ms)');
+        } else {
+          this.testResult = { status: 'error', error: 'GitHub Copilot CLI not detected' };
+          OpenFangToast.error('GitHub Copilot CLI not detected. Make sure you\'ve run: npm install -g @githubnext/github-copilot-cli && github-copilot-cli auth');
+        }
+      } catch(e) {
+        this.testResult = { status: 'error', error: e.message };
+        OpenFangToast.error('GitHub Copilot CLI not detected. Make sure you\'ve run: npm install -g @githubnext/github-copilot-cli && github-copilot-cli auth');
+      }
+      this.testingProvider = false;
+    },
+
     // ── Step 3: Agent creation ──
 
     selectTemplate(index) {
@@ -510,7 +532,8 @@ function wizardPage() {
         perplexity: 'llama-3.1-sonar-large-128k-online',
         cohere: 'command-r-plus',
         xai: 'grok-2',
-        'claude-code': 'claude-code/sonnet'
+        'claude-code': 'claude-code/sonnet',
+        'copilot-cli': 'copilot-cli/gpt-5.4'
       };
       return defaults[providerId] || '';
     },

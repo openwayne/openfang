@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod claude_code;
 pub mod copilot;
+pub mod copilot_cli;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
@@ -147,6 +148,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             key_required: true,
         }),
         "claude-code" => Some(ProviderDefaults {
+            base_url: "",
+            api_key_env: "",
+            key_required: false,
+        }),
+        "copilot-cli" => Some(ProviderDefaults {
             base_url: "",
             api_key_env: "",
             key_required: false,
@@ -310,6 +316,16 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         )));
     }
 
+    // GitHub Copilot CLI — subprocess-based (via gh copilot)
+    if provider == "copilot-cli" {
+        let cli_path = config.base_url.clone();
+        return Ok(Arc::new(copilot_cli::CopilotCliDriver::new(
+            cli_path,
+            config.skip_permissions,
+            config.api_key.clone(),
+        )));
+    }
+
     // Qwen Code CLI — subprocess-based, uses Qwen OAuth (free tier)
     if provider == "qwen-code" {
         let cli_path = config.base_url.clone();
@@ -421,7 +437,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, codex, claude-code, copilot-cli. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -496,6 +512,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "venice",
         "codex",
         "claude-code",
+        "copilot-cli",
         "qwen-code",
     ]
 }
@@ -598,8 +615,9 @@ mod tests {
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
+        assert!(providers.contains(&"copilot-cli"));
         assert!(providers.contains(&"qwen-code"));
-        assert_eq!(providers.len(), 35);
+        assert_eq!(providers.len(), 36);
     }
 
     #[test]

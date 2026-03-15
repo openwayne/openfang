@@ -93,11 +93,81 @@ impl Default for ProbeCache {
 ///
 /// - **Ollama**: `GET {base_url_root}/api/tags` → parses `.models[].name`
 /// - **OpenAI-compat** (vLLM, LM Studio): `GET {base_url}/models` → parses `.data[].id`
+/// - **CLI Tools** (claude-code, copilot-cli): Runs `version` check command.
 ///
 /// `base_url` should be the provider's base URL from the catalog (e.g.,
 /// `http://localhost:11434/v1` for Ollama, `http://localhost:8000/v1` for vLLM).
 pub async fn probe_provider(provider: &str, base_url: &str) -> ProbeResult {
     let start = Instant::now();
+    tracing::debug!(provider = %provider, base_url = %base_url, "Probing provider health");
+
+    // ── Special handling for CLI-based providers ─────────────────────────────
+    if provider == "copilot-cli" {
+        // Run detection in a blocking task to avoid stalling the async runtime
+        let reachable = tokio::task::spawn_blocking(|| {
+             crate::drivers::copilot_cli::copilot_cli_available()
+        }).await.unwrap_or(false);
+        
+        tracing::debug!(provider = "copilot-cli", reachable = reachable, "CLI probe result");
+
+        return ProbeResult {
+            reachable,
+            latency_ms: start.elapsed().as_millis() as u64,
+            discovered_models: vec![], // Hard to list dynamic models from CLI
+            error: if reachable { None } else { Some("CLI not found".to_string()) },
+        };
+    }
+
+    if provider == "claude-code" {
+        // We assume claude-code driver has a similar availability check
+        let reachable = tokio::task::spawn_blocking(|| {
+             std::process::Command::new("claude")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }).await.unwrap_or(false);
+
+        return ProbeResult {
+            reachable,
+            latency_ms: start.elapsed().as_millis() as u64,
+            discovered_models: vec![],
+            error: if reachable { None } else { Some("CLI not found".to_string()) },
+        };
+    }
+
+    if provider == "qwen-code" {
+        // qwen-code detection: `qwen-code --version`
+        let reachable = tokio::task::spawn_blocking(|| {
+             std::process::Command::new("qwen-code")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }).await.unwrap_or(false);
+
+        return ProbeResult {
+            reachable,
+            latency_ms: start.elapsed().as_millis() as u64,
+            discovered_models: vec![],
+            error: if reachable { None } else { Some("CLI not found".to_string()) },
+        };
+    }
+
+    // ── HTTP Probing ─────────────────────────────────────────────────────────
+
+    if base_url.is_empty() || !base_url.starts_with("http") {
+        return ProbeResult {
+            reachable: false,
+            latency_ms: 0,
+            discovered_models: vec![],
+            error: Some("Skipping non-HTTP provider (empty URL)".to_string()),
+        };
+    }
 
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECS))

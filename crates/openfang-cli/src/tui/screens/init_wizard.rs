@@ -197,6 +197,14 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "no API key",
     },
     ProviderInfo {
+        name: "copilot-cli",
+        display: "Copilot CLI",
+        env_var: "",
+        default_model: "copilot-cli/gpt-5.4",
+        needs_key: false,
+        hint: "no API key",
+    },
+    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",

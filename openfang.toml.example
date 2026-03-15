@@ -11,6 +11,12 @@ model = "claude-sonnet-4-20250514"        # Model identifier
 api_key_env = "ANTHROPIC_API_KEY"         # Environment variable holding API key
 # base_url = "https://api.anthropic.com"  # Optional: override API endpoint
 
+# Example: GitHub Copilot CLI (requires `npm install -g @githubnext/github-copilot-cli`)
+# [default_model]
+# provider = "copilot-cli"
+# model = "gpt-5.4"                         # Model to use
+# # base_url = "copilot"                    # Optional: path to copilot binary if not in PATH
+
 [memory]
 decay_rate = 0.05                         # Memory confidence decay rate
 # sqlite_path = "~/.openfang/data/openfang.db"   # Optional: custom DB path
