@@ -150,3 +150,10 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 8
+opt-level = 2
+strip = false
