@@ -1914,6 +1914,16 @@ impl OpenFangKernel {
             )
             .await;
 
+            // Drop the phase callback immediately after the streaming loop
+            // completes. It holds a clone of the stream sender (`tx`), which
+            // keeps the mpsc channel alive. If we don't drop it here, the
+            // WS/SSE stream_task won't see channel closure until this entire
+            // spawned task exits (after all post-processing below). This was
+            // causing 20-45s hangs where the client received phase:done but
+            // never got the response event (the upstream WS would die from
+            // ping timeout before post-processing finished).
+            drop(phase_cb);
+
             match result {
                 Ok(result) => {
                     // Append new messages to canonical session for cross-channel memory
