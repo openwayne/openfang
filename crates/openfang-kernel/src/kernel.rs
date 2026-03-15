@@ -1227,16 +1227,18 @@ impl OpenFangKernel {
 
     /// Spawn a new agent from a manifest, optionally linking to a parent agent.
     pub fn spawn_agent(&self, manifest: AgentManifest) -> KernelResult<AgentId> {
-        self.spawn_agent_with_parent(manifest, None)
+        self.spawn_agent_with_parent(manifest, None, None)
     }
 
     /// Spawn a new agent with an optional parent for lineage tracking.
+    /// If fixed_id is provided, use it instead of generating a new UUID.
     pub fn spawn_agent_with_parent(
         &self,
         manifest: AgentManifest,
         parent: Option<AgentId>,
+        fixed_id: Option<AgentId>,
     ) -> KernelResult<AgentId> {
-        let agent_id = AgentId::new();
+        let agent_id = fixed_id.unwrap_or_else(AgentId::new);
         let session_id = SessionId::new();
         let name = manifest.name.clone();
 
@@ -3279,8 +3281,10 @@ impl OpenFangKernel {
             let _ = self.kill_agent(old.id);
         }
 
-        // Spawn the agent
-        let agent_id = self.spawn_agent(manifest)?;
+        // Spawn the agent with a fixed ID based on hand_id for stable identity across restarts.
+        // This ensures triggers and cron jobs continue to work after daemon restart.
+        let fixed_agent_id = AgentId::from_string(hand_id);
+        let agent_id = self.spawn_agent_with_parent(manifest, None, Some(fixed_agent_id))?;
 
         // Restore triggers from the old agent under the new agent ID (#519).
         if !saved_triggers.is_empty() {
@@ -5553,7 +5557,7 @@ impl KernelHandle for OpenFangKernel {
         let name = manifest.name.clone();
         let parent = parent_id.and_then(|pid| pid.parse::<AgentId>().ok());
         let id = self
-            .spawn_agent_with_parent(manifest, parent)
+            .spawn_agent_with_parent(manifest, parent, None)
             .map_err(|e| format!("Spawn failed: {e}"))?;
         Ok((id.to_string(), name))
     }
