@@ -859,7 +859,8 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("minimax-m2.1", "MiniMax-M2.1"),
         ("codegeex", "codegeex-4"),
         // Codex aliases
-        ("codex", "codex/gpt-4.1"),
+        ("codex", "codex/gpt-5.4"),
+        ("codex-5.4", "codex/gpt-5.4"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
         // NVIDIA NIM aliases
@@ -3482,6 +3483,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         // OpenAI Codex (2) — reuses OpenAI driver
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
+            id: "codex/gpt-5.4".into(),
+            display_name: "GPT-5.4 (Codex)".into(),
+            provider: "codex".into(),
+            tier: ModelTier::Frontier,
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            input_cost_per_m: 2.00,
+            output_cost_per_m: 8.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex".into(), "codex-5.4".into()],
+        },
+        ModelCatalogEntry {
             id: "codex/gpt-4.1".into(),
             display_name: "GPT-4.1 (Codex)".into(),
             provider: "codex".into(),
@@ -3493,7 +3508,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
-            aliases: vec!["codex".into(), "codex-4.1".into()],
+            aliases: vec!["codex-4.1".into()],
         },
         ModelCatalogEntry {
             id: "codex/o4-mini".into(),
@@ -4320,7 +4335,8 @@ mod tests {
     fn test_codex_models() {
         let catalog = ModelCatalog::new();
         let models = catalog.models_by_provider("codex");
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.id == "codex/gpt-5.4"));
         assert!(models.iter().any(|m| m.id == "codex/gpt-4.1"));
         assert!(models.iter().any(|m| m.id == "codex/o4-mini"));
     }
@@ -4329,7 +4345,7 @@ mod tests {
     fn test_codex_aliases() {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("codex").unwrap();
-        assert_eq!(entry.id, "codex/gpt-4.1");
+        assert_eq!(entry.id, "codex/gpt-5.4");
     }
 
     #[test]
