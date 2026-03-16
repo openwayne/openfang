@@ -1736,6 +1736,7 @@
                               <span x-show="runningJobId !== job.id">Run</span>
                               <span x-show="runningJobId === job.id">...</span>
                             </button>
+                            <button class="btn btn-ghost btn-sm" @click="openEdit(job)">Edit</button>
                             <button class="btn btn-ghost btn-sm" @click="toggleJob(job)" x-text="job.enabled ? 'Pause' : 'Enable'"></button>
                             <button class="btn btn-danger btn-sm" @click="deleteJob(job)">Del</button>
                           </div>
@@ -1744,6 +1745,27 @@
                     </template>
                   </tbody>
                 </table>
+              </div>
+
+              <!-- Run Result Modal -->
+              <div x-show="showRunResult" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showRunResult=false" @keydown.escape.window="showRunResult=false" x-transition>
+                <div class="card" style="width:560px;max-width:92vw" @click.stop>
+                  <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+                    <span x-text="runResult && !runResult.error ? '✓ ' + runResult.jobName + ' — completed' : '✗ ' + (runResult && runResult.jobName || 'Job') + ' — failed'"></span>
+                    <button class="btn btn-ghost btn-sm" @click="showRunResult=false">✕</button>
+                  </div>
+                  <div style="margin-top:12px">
+                    <template x-if="runResult && runResult.error">
+                      <div class="badge badge-danger" style="display:block;padding:10px;font-size:13px;white-space:pre-wrap;word-break:break-all" x-text="runResult.error"></div>
+                    </template>
+                    <template x-if="runResult && !runResult.error">
+                      <pre style="background:var(--surface2,#1e1e2e);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:400px;white-space:pre-wrap;word-break:break-all" x-text="typeof runResult.output === 'object' ? JSON.stringify(runResult.output, null, 2) : String(runResult.output)"></pre>
+                    </template>
+                  </div>
+                  <div style="display:flex;justify-content:flex-end;margin-top:12px">
+                    <button class="btn btn-primary btn-sm" @click="showRunResult=false">Close</button>
+                  </div>
+                </div>
               </div>
 
               <!-- Empty State -->
@@ -1811,6 +1833,66 @@
                   <button class="btn btn-primary btn-block mt-4" @click="createJob()" :disabled="creating">
                     <span x-show="!creating">Create Schedule</span>
                     <span x-show="creating">Creating...</span>
+                  </button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Edit Job Modal -->
+            <template x-if="showEditForm">
+              <div class="modal-overlay" @click.self="showEditForm = false" @keydown.escape.window="showEditForm = false">
+                <div class="modal">
+                  <div class="modal-header">
+                    <h3>Edit Scheduled Job</h3>
+                    <button class="modal-close" @click="showEditForm = false">&times;</button>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Job Name</label>
+                    <input class="form-input" x-model="editJob.name" placeholder="daily-report">
+                  </div>
+
+                  <div class="form-group">
+                    <label>Cron Expression</label>
+                    <input class="form-input" x-model="editJob.cron" placeholder="0 9 * * 1-5" style="font-family:monospace">
+                    <div class="text-xs text-dim mt-1" x-show="editJob.cron" x-text="describeCron(editJob.cron)"></div>
+                    <div class="text-xs text-dim mt-1">Format: <code>minute hour day-of-month month day-of-week</code></div>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Quick Presets</label>
+                    <div class="flex gap-1 flex-wrap">
+                      <template x-for="preset in cronPresets" :key="preset.cron">
+                        <button class="btn btn-sm" :class="editJob.cron === preset.cron ? 'btn-primary' : 'btn-ghost'" @click="editJob.cron = preset.cron" x-text="preset.label"></button>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Target Agent</label>
+                    <select class="form-select" x-model="editJob.agent_id">
+                      <option value="">Any available agent</option>
+                      <template x-for="a in availableAgents" :key="a.id">
+                        <option :value="a.id" x-text="a.name + ' (' + (a.model_provider || 'unknown') + ':' + (a.model_name || 'unknown') + ')'"></option>
+                      </template>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Message to Send</label>
+                    <textarea class="form-textarea" x-model="editJob.message" placeholder="Generate and email the daily status report..." rows="3"></textarea>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="flex items-center gap-2">
+                      <div class="toggle" :class="{ active: editJob.enabled }" @click="editJob.enabled = !editJob.enabled"></div>
+                      <span x-text="editJob.enabled ? 'Enabled' : 'Paused'"></span>
+                    </label>
+                  </div>
+
+                  <button class="btn btn-primary btn-block mt-4" @click="saveEdit()" :disabled="saving">
+                    <span x-show="!saving">Save Changes</span>
+                    <span x-show="saving">Saving...</span>
                   </button>
                 </div>
               </div>

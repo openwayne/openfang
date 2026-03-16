@@ -4081,6 +4081,122 @@ impl OpenFangKernel {
                                     }
                                 }
                             }
+                            openfang_types::scheduler::CronAction::SkillRun {
+                                skill_name,
+                                tool_name,
+                                input,
+                                timeout_secs,
+                            } => {
+                                tracing::debug!(
+                                    job = %job_name,
+                                    skill = %skill_name,
+                                    tool = %tool_name,
+                                    "Cron: firing skill run"
+                                );
+                                let timeout_s = timeout_secs.unwrap_or(60);
+                                let timeout = std::time::Duration::from_secs(timeout_s);
+                                let delivery = job.delivery.clone();
+
+                                // Snapshot manifest + path (RwLock is !Send across .await)
+                                let skill_entry = {
+                                    let registry = kernel
+                                        .skill_registry
+                                        .read()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    registry
+                                        .get(skill_name)
+                                        .map(|s| (s.manifest.clone(), s.path.clone()))
+                                };
+
+                                match skill_entry {
+                                    None => {
+                                        let err_msg = format!("skill not found: {skill_name}");
+                                        tracing::warn!(job = %job_name, %err_msg);
+                                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                                    }
+                                    Some((manifest, skill_path)) => {
+                                        let tool = tool_name.clone();
+                                        let inp = input.clone();
+                                        match tokio::time::timeout(
+                                            timeout,
+                                            openfang_skills::loader::execute_skill_tool(
+                                                &manifest,
+                                                &skill_path,
+                                                &tool,
+                                                &inp,
+                                            ),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(result)) => {
+                                                if result.is_error {
+                                                    let err_msg = format!(
+                                                        "skill tool returned error: {}",
+                                                        result.output
+                                                    );
+                                                    tracing::warn!(job = %job_name, %err_msg);
+                                                    kernel
+                                                        .cron_scheduler
+                                                        .record_failure(job_id, &err_msg);
+                                                } else {
+                                                    tracing::info!(
+                                                        job = %job_name,
+                                                        "Cron skill run completed"
+                                                    );
+                                                    // Deliver serialised output (best-effort)
+                                                    let output_str =
+                                                        result.output.to_string();
+                                                    if let Err(e) = cron_deliver_response(
+                                                        &kernel,
+                                                        agent_id,
+                                                        &output_str,
+                                                        &delivery,
+                                                    )
+                                                    .await
+                                                    {
+                                                        tracing::warn!(
+                                                            job = %job_name,
+                                                            error = %e,
+                                                            "Cron skill run delivery failed"
+                                                        );
+                                                        kernel
+                                                            .cron_scheduler
+                                                            .record_failure(job_id, &e);
+                                                    } else {
+                                                        kernel
+                                                            .cron_scheduler
+                                                            .record_success(job_id);
+                                                    }
+                                                }
+                                            }
+                                            Ok(Err(e)) => {
+                                                let err_msg = format!("{e}");
+                                                tracing::warn!(
+                                                    job = %job_name,
+                                                    error = %err_msg,
+                                                    "Cron skill run failed"
+                                                );
+                                                kernel
+                                                    .cron_scheduler
+                                                    .record_failure(job_id, &err_msg);
+                                            }
+                                            Err(_) => {
+                                                tracing::warn!(
+                                                    job = %job_name,
+                                                    timeout_s,
+                                                    "Cron skill run timed out"
+                                                );
+                                                kernel.cron_scheduler.record_failure(
+                                                    job_id,
+                                                    &format!(
+                                                        "skill run timed out after {timeout_s}s"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -6242,6 +6358,189 @@ impl openfang_wire::peer::PeerHandle for OpenFangKernel {
 
     fn uptime_secs(&self) -> u64 {
         self.booted_at.elapsed().as_secs()
+    }
+}
+
+impl OpenFangKernel {
+    /// Manually trigger a cron job immediately, returning the execution result.
+    /// Used by the "Run Now" dashboard button (`POST /api/cron/jobs/{id}/run`).
+    pub async fn cron_run_now(
+        self: std::sync::Arc<Self>,
+        job_id_str: &str,
+    ) -> Result<serde_json::Value, String> {
+        use openfang_types::scheduler::CronAction;
+
+        let id = openfang_types::scheduler::CronJobId(
+            uuid::Uuid::parse_str(job_id_str)
+                .map_err(|e| format!("Invalid job ID: {e}"))?,
+        );
+        let job = self
+            .cron_scheduler
+            .get_job(id)
+            .ok_or_else(|| format!("Job not found: {job_id_str}"))?;
+
+        let job_id = job.id;
+        let agent_id = job.agent_id;
+        let job_name = job.name.clone();
+
+        match &job.action {
+            CronAction::SystemEvent { text } => {
+                let payload_bytes = serde_json::to_vec(&serde_json::json!({
+                    "type": format!("cron.{}", job_name),
+                    "text": text,
+                    "job_id": job_id.to_string(),
+                }))
+                .unwrap_or_default();
+                let event = Event::new(
+                    AgentId::new(),
+                    EventTarget::Broadcast,
+                    EventPayload::Custom(payload_bytes),
+                );
+                self.publish_event(event).await;
+                self.cron_scheduler.record_success(job_id);
+                Ok(serde_json::json!({"status": "completed", "output": text}))
+            }
+            CronAction::AgentTurn {
+                message,
+                timeout_secs,
+                ..
+            } => {
+                let timeout_s = timeout_secs.unwrap_or(120);
+                let timeout = std::time::Duration::from_secs(timeout_s);
+                let kh: std::sync::Arc<dyn openfang_runtime::kernel_handle::KernelHandle> =
+                    self.clone();
+                let msg = message.clone();
+                match tokio::time::timeout(
+                    timeout,
+                    self.send_message_with_handle(agent_id, &msg, Some(kh), None, None),
+                )
+                .await
+                {
+                    Ok(Ok(result)) => {
+                        self.cron_scheduler.record_success(job_id);
+                        Ok(serde_json::json!({"status": "completed", "output": result.response}))
+                    }
+                    Ok(Err(e)) => {
+                        let err = format!("{e}");
+                        self.cron_scheduler.record_failure(job_id, &err);
+                        Err(err)
+                    }
+                    Err(_) => {
+                        let err = format!("timed out after {timeout_s}s");
+                        self.cron_scheduler.record_failure(job_id, &err);
+                        Err(err)
+                    }
+                }
+            }
+            CronAction::WorkflowRun {
+                workflow_id,
+                input,
+                timeout_secs,
+            } => {
+                let wf_input = input.clone().unwrap_or_default();
+                let timeout_s = timeout_secs.unwrap_or(120);
+                let timeout = std::time::Duration::from_secs(timeout_s);
+                let wf_id = match uuid::Uuid::parse_str(workflow_id) {
+                    Ok(uuid) => crate::workflow::WorkflowId(uuid),
+                    Err(_) => {
+                        let all_wfs = self.workflows.list_workflows().await;
+                        if let Some(wf) = all_wfs.iter().find(|w| w.name == *workflow_id) {
+                            wf.id
+                        } else {
+                            let err = format!("workflow not found: {workflow_id}");
+                            self.cron_scheduler.record_failure(job_id, &err);
+                            return Err(err);
+                        }
+                    }
+                };
+                match tokio::time::timeout(timeout, self.run_workflow(wf_id, wf_input)).await {
+                    Ok(Ok((_run_id, output))) => {
+                        self.cron_scheduler.record_success(job_id);
+                        Ok(serde_json::json!({"status": "completed", "output": output}))
+                    }
+                    Ok(Err(e)) => {
+                        let err = format!("{e}");
+                        self.cron_scheduler.record_failure(job_id, &err);
+                        Err(err)
+                    }
+                    Err(_) => {
+                        let err = format!("timed out after {timeout_s}s");
+                        self.cron_scheduler.record_failure(job_id, &err);
+                        Err(err)
+                    }
+                }
+            }
+            CronAction::SkillRun {
+                skill_name,
+                tool_name,
+                input,
+                timeout_secs,
+            } => {
+                let timeout_s = timeout_secs.unwrap_or(60);
+                let timeout = std::time::Duration::from_secs(timeout_s);
+
+                // Snapshot manifest + path (RwLock is !Send across .await)
+                let skill_entry = {
+                    let registry = self
+                        .skill_registry
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    registry
+                        .get(skill_name)
+                        .map(|s| (s.manifest.clone(), s.path.clone()))
+                };
+
+                match skill_entry {
+                    None => {
+                        let err = format!("skill not found: {skill_name}");
+                        self.cron_scheduler.record_failure(job_id, &err);
+                        Err(err)
+                    }
+                    Some((manifest, skill_path)) => {
+                        let tool = tool_name.clone();
+                        let inp = input.clone();
+                        match tokio::time::timeout(
+                            timeout,
+                            openfang_skills::loader::execute_skill_tool(
+                                &manifest,
+                                &skill_path,
+                                &tool,
+                                &inp,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) => {
+                                if result.is_error {
+                                    let err = format!(
+                                        "skill tool returned error: {}",
+                                        result.output
+                                    );
+                                    self.cron_scheduler.record_failure(job_id, &err);
+                                    Err(err)
+                                } else {
+                                    self.cron_scheduler.record_success(job_id);
+                                    Ok(serde_json::json!({
+                                        "status": "completed",
+                                        "output": result.output,
+                                    }))
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                let err = format!("{e}");
+                                self.cron_scheduler.record_failure(job_id, &err);
+                                Err(err)
+                            }
+                            Err(_) => {
+                                let err = format!("timed out after {timeout_s}s");
+                                self.cron_scheduler.record_failure(job_id, &err);
+                                Err(err)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

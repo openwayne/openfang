@@ -588,6 +588,13 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                                         .unwrap_or_default()
                                 )
                             }
+                            openfang_types::scheduler::CronAction::SkillRun {
+                                skill_name,
+                                tool_name,
+                                ..
+                            } => {
+                                format!("Run skill {skill_name}/{tool_name}")
+                            }
                         };
                         match self.kernel.send_message(j.agent_id, &message).await {
                             Ok(result) => {

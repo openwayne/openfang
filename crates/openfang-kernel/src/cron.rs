@@ -189,11 +189,94 @@ impl CronScheduler {
         }
     }
 
+    /// Update a job's mutable fields: `name`, `schedule`, `action`, `enabled`.
+    /// Only `Some` fields are applied; `None` fields are left unchanged.
+    /// Re-computes `next_run` whenever the schedule changes or the job is
+    /// re-enabled after being disabled.
+    pub fn update_job(
+        &self,
+        id: CronJobId,
+        name: Option<String>,
+        schedule: Option<openfang_types::scheduler::CronSchedule>,
+        action: Option<openfang_types::scheduler::CronAction>,
+        enabled: Option<bool>,
+    ) -> OpenFangResult<()> {
+        match self.jobs.get_mut(&id) {
+            Some(mut meta) => {
+                if let Some(n) = name {
+                    meta.job.name = n;
+                }
+                let schedule_changed = schedule.is_some();
+                if let Some(s) = schedule {
+                    meta.job.schedule = s;
+                }
+                if let Some(a) = action {
+                    meta.job.action = a;
+                }
+                if let Some(e) = enabled {
+                    meta.job.enabled = e;
+                    if e {
+                        meta.consecutive_errors = 0;
+                    }
+                }
+                // Recompute next_run if schedule changed or job is enabled
+                if schedule_changed || meta.job.enabled {
+                    meta.job.next_run = Some(compute_next_run(&meta.job.schedule));
+                }
+                Ok(())
+            }
+            None => Err(OpenFangError::Internal(format!("Cron job {id} not found"))),
+        }
+    }
+
     // -- Queries ------------------------------------------------------------
 
     /// Get a single job by ID.
     pub fn get_job(&self, id: CronJobId) -> Option<CronJob> {
         self.jobs.get(&id).map(|r| r.value().job.clone())
+    }
+
+    /// Merge a JSON patch into `action.input` for jobs with a JSON-based action
+    /// (currently `SkillRun`, `AgentTurn`, `WorkflowRun`).
+    /// Only the keys present in `patch` are overwritten; others are preserved.
+    pub fn patch_action_input(
+        &self,
+        id: CronJobId,
+        patch: &serde_json::Value,
+    ) -> OpenFangResult<()> {
+        use openfang_types::scheduler::CronAction;
+        match self.jobs.get_mut(&id) {
+            Some(mut meta) => {
+                match &mut meta.job.action {
+                    CronAction::SkillRun { input, .. } => {
+                        if let (Some(obj), Some(patch_obj)) =
+                            (input.as_object_mut(), patch.as_object())
+                        {
+                            for (k, v) in patch_obj {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    CronAction::AgentTurn { message, .. } => {
+                        if let Some(s) = patch.get("message").and_then(|v| v.as_str()) {
+                            *message = s.to_string();
+                        }
+                    }
+                    CronAction::WorkflowRun { input, .. } => {
+                        if let Some(s) = patch.get("input").and_then(|v| v.as_str()) {
+                            *input = Some(s.to_string());
+                        }
+                    }
+                    CronAction::SystemEvent { text } => {
+                        if let Some(s) = patch.get("text").and_then(|v| v.as_str()) {
+                            *text = s.to_string();
+                        }
+                    }
+                }
+                Ok(())
+            }
+            None => Err(OpenFangError::Internal(format!("Cron job {id} not found"))),
+        }
     }
 
     /// Get the full metadata for a job (includes `one_shot`, `last_status`,

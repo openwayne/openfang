@@ -9825,6 +9825,151 @@ pub async fn cron_job_status(
     }
 }
 
+/// PUT /api/cron/jobs/{id} — Full update of a cron job (name, schedule, action, enabled).
+///
+/// Accepts any subset of the editable fields:
+/// - `name`: new display name
+/// - `schedule`: CronSchedule object with `kind` and expression fields
+/// - `action`: CronAction object (e.g. `{"kind":"agent_turn","message":"..."}`)
+/// - `enabled`: bool — activate or pause
+pub async fn put_cron_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    use openfang_types::scheduler::{CronAction, CronSchedule};
+
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid job ID"})),
+            );
+        }
+    };
+    let job_id = openfang_types::scheduler::CronJobId(uuid);
+
+    let name = body.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    let schedule = if body.get("schedule").map(|v| v.is_object()).unwrap_or(false) {
+        match serde_json::from_value::<CronSchedule>(body["schedule"].clone()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("Invalid schedule: {e}")})),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let action = if body.get("action").map(|v| v.is_object()).unwrap_or(false) {
+        match serde_json::from_value::<CronAction>(body["action"].clone()) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("Invalid action: {e}")})),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let enabled = body.get("enabled").and_then(|v| v.as_bool());
+
+    match state
+        .kernel
+        .cron_scheduler
+        .update_job(job_id, name, schedule, action, enabled)
+    {
+        Ok(()) => {
+            let _ = state.kernel.cron_scheduler.persist();
+            let job = state.kernel.cron_scheduler.get_job(job_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "updated",
+                    "job": job.and_then(|j| serde_json::to_value(&j).ok()),
+                })),
+            )
+        }
+        Err(e) if format!("{e}").contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+/// PATCH /api/cron/jobs/{id} — Patch a cron job's action input (e.g. update cookie).
+///
+/// Body: JSON object whose keys are merged into the job's `action.input`.
+/// For `skill_run` jobs this lets you update any input field without
+/// recreating the whole job.
+pub async fn patch_cron_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    match uuid::Uuid::parse_str(&id) {
+        Ok(uuid) => {
+            let job_id = openfang_types::scheduler::CronJobId(uuid);
+            match state.kernel.cron_scheduler.patch_action_input(job_id, &body) {
+                Ok(()) => {
+                    let _ = state.kernel.cron_scheduler.persist();
+                    let job = state.kernel.cron_scheduler.get_job(job_id);
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "id": id,
+                            "status": "updated",
+                            "job": job.and_then(|j| serde_json::to_value(&j).ok()),
+                        })),
+                    )
+                }
+                Err(e) if format!("{e}").contains("not found") => (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": format!("{e}")})),
+                ),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("{e}")})),
+                ),
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid job ID"})),
+        ),
+    }
+}
+
+/// POST /api/cron/jobs/{id}/run — Trigger a cron job immediately ("Run Now").
+pub async fn run_cron_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.kernel.clone().cron_run_now(&id).await {
+        Ok(result) => (StatusCode::OK, Json(result)),
+        Err(e) if e.contains("not found") || e.contains("Not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Webhook trigger endpoints
 // ---------------------------------------------------------------------------

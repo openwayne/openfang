@@ -35,6 +35,9 @@ const MIN_TIMEOUT_SECS: u64 = 10;
 /// Maximum timeout for AgentTurn (seconds).
 const MAX_TIMEOUT_SECS: u64 = 600;
 
+/// Maximum timeout for SkillRun (seconds).
+const MAX_SKILL_TIMEOUT_SECS: u64 = 300;
+
 /// Maximum webhook URL length.
 const MAX_WEBHOOK_URL_LEN: usize = 2048;
 
@@ -129,6 +132,17 @@ pub enum CronAction {
         /// Initial input to the workflow (default: empty).
         input: Option<String>,
         /// Timeout in seconds (10..=3600, default: 120).
+        timeout_secs: Option<u64>,
+    },
+    /// Execute a skill tool directly, without an LLM turn.
+    SkillRun {
+        /// Name of the installed skill to invoke.
+        skill_name: String,
+        /// Name of the tool within the skill.
+        tool_name: String,
+        /// JSON input to pass to the tool (must be a JSON object).
+        input: serde_json::Value,
+        /// Timeout in seconds (10..=300, default: 60).
         timeout_secs: Option<u64>,
     },
 }
@@ -334,6 +348,31 @@ impl CronJob {
                     if *t > 3600 {
                         return Err(format!(
                             "timeout_secs too large ({t}, max 3600)"
+                        ));
+                    }
+                }
+            }
+            CronAction::SkillRun {
+                skill_name,
+                tool_name,
+                timeout_secs,
+                ..
+            } => {
+                if skill_name.is_empty() {
+                    return Err("skill_name must not be empty".into());
+                }
+                if tool_name.is_empty() {
+                    return Err("tool_name must not be empty".into());
+                }
+                if let Some(t) = timeout_secs {
+                    if *t < MIN_TIMEOUT_SECS {
+                        return Err(format!(
+                            "timeout_secs too small ({t}, min {MIN_TIMEOUT_SECS})"
+                        ));
+                    }
+                    if *t > MAX_SKILL_TIMEOUT_SECS {
+                        return Err(format!(
+                            "timeout_secs too large ({t}, max {MAX_SKILL_TIMEOUT_SECS})"
                         ));
                     }
                 }
@@ -1001,6 +1040,103 @@ mod tests {
             assert_eq!(workflow_id, "my-wf");
         } else {
             panic!("expected WorkflowRun variant");
+        }
+    }
+
+    // -- Action: SkillRun --
+
+    #[test]
+    fn skill_run_valid() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: "news-flash".into(),
+            tool_name: "fetch_news_flash".into(),
+            input: serde_json::json!({"type": "A", "page_no": 1}),
+            timeout_secs: Some(60),
+        };
+        assert!(job.validate(0).is_ok());
+    }
+
+    #[test]
+    fn skill_run_empty_skill_name() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: String::new(),
+            tool_name: "fetch".into(),
+            input: serde_json::Value::Null,
+            timeout_secs: None,
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("skill_name"), "{err}");
+    }
+
+    #[test]
+    fn skill_run_empty_tool_name() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: "my-skill".into(),
+            tool_name: String::new(),
+            input: serde_json::Value::Null,
+            timeout_secs: None,
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("tool_name"), "{err}");
+    }
+
+    #[test]
+    fn skill_run_timeout_too_small() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: "my-skill".into(),
+            tool_name: "fetch".into(),
+            input: serde_json::Value::Null,
+            timeout_secs: Some(9),
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("too small"), "{err}");
+    }
+
+    #[test]
+    fn skill_run_timeout_too_large() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: "my-skill".into(),
+            tool_name: "fetch".into(),
+            input: serde_json::Value::Null,
+            timeout_secs: Some(301),
+        };
+        let err = job.validate(0).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn skill_run_max_timeout_ok() {
+        let mut job = valid_job();
+        job.action = CronAction::SkillRun {
+            skill_name: "my-skill".into(),
+            tool_name: "fetch".into(),
+            input: serde_json::json!({}),
+            timeout_secs: Some(300),
+        };
+        assert!(job.validate(0).is_ok());
+    }
+
+    #[test]
+    fn serde_skill_run_tag() {
+        let action = CronAction::SkillRun {
+            skill_name: "news-flash".into(),
+            tool_name: "fetch_news_flash".into(),
+            input: serde_json::json!({"type": "A"}),
+            timeout_secs: None,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"kind\":\"skill_run\""));
+        let back: CronAction = serde_json::from_str(&json).unwrap();
+        if let CronAction::SkillRun { skill_name, tool_name, .. } = back {
+            assert_eq!(skill_name, "news-flash");
+            assert_eq!(tool_name, "fetch_news_flash");
+        } else {
+            panic!("expected SkillRun variant");
         }
     }
 }

@@ -30,8 +30,22 @@ function schedulerPage() {
     },
     creating: false,
 
+    // -- Edit Job form --
+    showEditForm: false,
+    editJob: {
+      id: '',
+      name: '',
+      cron: '',
+      agent_id: '',
+      message: '',
+      enabled: true
+    },
+    saving: false,
+
     // -- Run Now state --
     runningJobId: '',
+    runResult: null,    // { jobName, output, error }
+    showRunResult: false,
 
     // Cron presets
     cronPresets: [
@@ -198,18 +212,63 @@ function schedulerPage() {
       });
     },
 
+    openEdit(job) {
+      this.editJob = {
+        id: job.id,
+        name: job.name || '',
+        cron: job.cron || '',
+        agent_id: job.agent_id || '',
+        message: job.message || '',
+        enabled: job.enabled
+      };
+      this.showEditForm = true;
+    },
+
+    async saveEdit() {
+      if (!this.editJob.name.trim()) {
+        OpenFangToast.warn('Please enter a job name');
+        return;
+      }
+      if (!this.editJob.cron.trim()) {
+        OpenFangToast.warn('Please enter a cron expression');
+        return;
+      }
+      this.saving = true;
+      try {
+        var body = {
+          name: this.editJob.name,
+          schedule: { kind: 'cron', expr: this.editJob.cron },
+          action: { kind: 'agent_turn', message: this.editJob.message || 'Scheduled task: ' + this.editJob.name },
+          enabled: this.editJob.enabled
+        };
+        if (this.editJob.agent_id) {
+          body.agent_id = this.editJob.agent_id;
+        }
+        await OpenFangAPI.put('/api/cron/jobs/' + this.editJob.id, body);
+        this.showEditForm = false;
+        OpenFangToast.success('Schedule "' + this.editJob.name + '" updated');
+        await this.loadJobs();
+      } catch(e) {
+        OpenFangToast.error('Failed to update schedule: ' + (e.message || e));
+      }
+      this.saving = false;
+    },
+
     async runNow(job) {
       this.runningJobId = job.id;
       try {
-        var result = await OpenFangAPI.post('/api/schedules/' + job.id + '/run', {});
+        var result = await OpenFangAPI.post('/api/cron/jobs/' + job.id + '/run', {});
         if (result.status === 'completed') {
-          OpenFangToast.success('Schedule "' + (job.name || 'job') + '" executed successfully');
           job.last_run = new Date().toISOString();
+          this.runResult = { jobName: job.name || 'job', output: result.output, error: null };
+          this.showRunResult = true;
         } else {
-          OpenFangToast.error('Schedule run failed: ' + (result.error || 'Unknown error'));
+          this.runResult = { jobName: job.name || 'job', output: null, error: result.error || 'Unknown error' };
+          this.showRunResult = true;
         }
       } catch(e) {
-        OpenFangToast.error('Run Now is not yet available for cron jobs');
+        this.runResult = { jobName: job.name || 'job', output: null, error: e.message || String(e) };
+        this.showRunResult = true;
       }
       this.runningJobId = '';
     },
